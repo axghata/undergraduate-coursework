@@ -1,0 +1,318 @@
+---
+title: "Perhitungan Premi Long Term Care Untuk Penderita Alzheimer/Dementia"
+author: "Katrina Aghata"
+date: "2025-06-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+# ===== 1. LIBRARY =====
+# Instal dan muat package yang diperlukan
+install.packages(c("readxl", "dplyr", "tidyr", "ggplot2"))
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+#Data Mortalitas Umum dan Mortalitas Penyakit (qx_umum & qx_penyakit)
+```{r}
+# Pilih file IHME dan UN
+ihme_file <- file.choose()
+unpop_file <- file.choose()
+
+# Baca data dari file IHME
+ihme_data <- read_excel(ihme_file)
+
+# Baca data dari UN Population
+unpop_data <- read_excel(unpop_file)
+```
+
+```{r}
+head(ihme_data)
+```
+#Data Mortalitas Akibat Alzheimer/Dementia (qx_penyakit)
+```{r}
+
+# Contoh: Filter untuk tahun 2021, cause dan metric tertentu
+ihme_clean <- ihme_data %>%
+  filter(year == 2021, metric == 1, cause == 294, age >= 40, age <= 80) %>%
+  group_by(sex) %>%
+  complete(age = 40:80) %>%
+  arrange(age) %>%
+  group_by(sex) %>%
+  mutate(mx_interp = approx(age, val, xout = age, rule = 2)$y)
+
+
+```
+
+```{r}
+# 2. Pilih file kedua: PENYAKIT (prevalensi penyakit)
+file_penyakit <- file.choose()  # file dari IHME GBD
+qx_penyakit <- read_excel(file_penyakit, sheet = "IHME-GBD_2021_DATA-17da1670-1") %>%  
+  rename(Umur = age, prevalensi = val) %>%
+  filter(Umur >= 40 & Umur <= 80, metric == 2)
+```
+
+#Data Preparasi dan Cleaning Data
+```{r}
+# Hapus baris yang mengandung NA di kolom Umur atau prevalensi
+qx_penyakit_clean <- qx_penyakit[!is.na(qx_penyakit$Umur) & !is.na(qx_penyakit$prevalensi), ]
+
+# Pastikan umur tidak duplikat (ambil yang pertama kalau ada duplikat)
+qx_penyakit_clean <- qx_penyakit_clean[!duplicated(qx_penyakit_clean$Umur), ]
+
+# Cek apakah cukup data (minimal 2 titik)
+if (nrow(qx_penyakit_clean) >= 2) {
+  qx_penyakit_interp <- approxfun(qx_penyakit_clean$Umur, qx_penyakit_clean$prevalensi, method = "linear", rule = 2)
+} else {
+  stop("Data tidak cukup untuk interpolasi. Pastikan ada minimal 2 nilai non-NA dan umur tidak duplikat.")
+}
+```
+
+#Statistik Deskriptif
+```{r}
+summary(qx_penyakit)
+
+# Lihat jumlah nilai NA
+colSums(is.na(qx_penyakit))
+
+# Tampilkan baris yang valid saja
+qx_penyakit_valid <- qx_penyakit[!is.na(qx_penyakit$Umur) & !is.na(qx_penyakit$prevalensi), ]
+print(qx_penyakit_valid)
+```
+
+#INTERPOLASI LINIER PREVALENSI
+```{r}
+qx_penyakit_interp <- approxfun(qx_penyakit$Umur, qx_penyakit$prevalensi, method = "linear", rule = 2)
+```
+ 
+#Matriks Transisi Antar State (Markov Chain)
+```{r}
+get_transition_matrix <- function(age) {
+  qx <- qx_umum$qx[qx_umum$Umur == age]
+  p12 <- qx_penyakit_interp(age)
+  p13 <- qx
+  p11 <- 1 - p12 - p13
+  
+  p22 <- 1 - p13
+  p23 <- p13
+  
+  matrix(c(
+    p11, p12, p13,
+    0,   p22, p23,
+    0,   0,   1
+  ), nrow = 3, byrow = TRUE)
+}
+
+print(get_transition_matrix)
+```
+#Fungsi Interpolasi Prevalensi (x =41)
+```{r}
+nilai_konstan <- mean(c(0.007108, 0.000403))
+qx_penyakit_interp <- function(x) rep(nilai_konstan, length(x))
+print(nilai_konstan)
+```
+# Ganti dengan nilai dari dataset kamu (qx_umum)
+```{r}
+qx_umum <- data.frame(
+  Umur = 41,
+  qx = 0.0009  
+)
+print(qx_umum)
+```
+
+```{r}
+# ==== 3. Fungsi buat matriks transisi ====
+get_transition_matrix <- function(age) {
+  # Ambil nilai qx (prob meninggal)
+  qx <- qx_umum$qx[qx_umum$Umur == age]
+  
+  # Prob pindah dari sehat ke sakit
+  p12 <- qx_penyakit_interp(age)
+  
+  # Prob langsung meninggal dari sehat
+  p13 <- qx
+  
+  # Prob tetap sehat
+  p11 <- 1 - p12 - p13
+  
+  # Prob tetap sakit dan meninggal dari sakit
+  p22 <- 1 - p13
+  p23 <- p13
+  
+  # Tampilkan hasil
+  cat("Umur:", age, "\n")
+  cat("p11 (Sehat → Sehat):", p11, "\n")
+  cat("p12 (Sehat → Sakit):", p12, "\n")
+  cat("p13 (Sehat → Meninggal):", p13, "\n")
+  cat("p22 (Sakit → Sakit):", p22, "\n")
+  cat("p23 (Sakit → Meninggal):", p23, "\n\n")
+  
+  # Matriks transisi
+  matrix(c(
+    p11, p12, p13,
+    0,   p22, p23,
+    0,   0,   1
+  ), nrow = 3, byrow = TRUE)
+}
+
+transition_matrix_41 <- get_transition_matrix(41)
+
+print(transition_matrix_41)
+
+```
+#Matriks Transisi untuk 40-80 tahun
+```{r}
+# Inisialisasi list untuk simpan matriks transisi tiap umur
+list_P <- vector("list", length = 80 - 40 + 1)
+names(list_P) <- as.character(40:80)
+
+for (umur_t in 40:80) {
+  qx <- qx_umum$qx[qx_umum$Umur == umur_t]
+  
+  if (length(qx) == 0) {
+    warning(paste("Umur", umur_t, "tidak tersedia di qx_umum, gunakan default qx=0"))
+    qx <- 0  # atau nilai default kalau mau skip pakai 0
+  }
+  
+  p12 <- qx_penyakit_interp(umur_t)  # sehat -> sakit
+  p13 <- qx                         # sehat -> meninggal
+  p11 <- 1 - p12 - p13              # sehat -> sehat
+  
+  p22 <- 1 - p13                   # sakit -> sakit (anggap sakit bisa tetap hidup kecuali meninggal)
+  p23 <- p13                      # sakit -> meninggal
+  
+  P <- matrix(c(
+    p11, p12, p13,
+    0,   p22, p23,
+    0,   0,   1
+  ), nrow = 3, byrow = TRUE)
+  
+  list_P[[as.character(umur_t)]] <- P
+}
+
+# Contoh akses matriks transisi umur 45
+print(list_P[["45"]])
+
+```
+
+#Menghitung APV
+```{r}
+calculate_APV_simple <- function(age, alpha = 0.055, m = 10, c = 500000000) {
+  v <- 1 / (1 + alpha)
+  APV <- 0
+  surv_prob <- 1  # probabilitas bertahan hidup awal
+
+  for (t in 0:(m - 1)) {
+    umur_t <- age + t
+    qx <- qx_umum$qx[qx_umum$Umur == umur_t]
+    
+    if (length(qx) == 0) {
+      warning(paste("Umur", umur_t, "tidak tersedia di qx_umum"))
+      break
+    }
+    
+    # Hitung kontribusi periode ke-t
+    APV <- APV + v^(t+1) * surv_prob * qx * c
+    
+    # Update probabilitas bertahan hidup untuk periode berikutnya
+    surv_prob <- surv_prob * (1 - qx)
+  }
+  
+  return(APV)
+}
+
+```
+
+```{r}
+
+umur_range <- 40:80
+hasil_simple <- sapply(umur_range, function(u) calculate_APV_simple(u))
+
+library(knitr)
+kable(data.frame(Umur=umur_range, APV=hasil_simple), digits=0, caption = "APV Manfaat (Simple) umur 40-80")
+
+```
+
+```{r}
+# Fungsi utama hitung premi semua umur 40-80
+hitung_premi_semua_umur <- function(usia_awal = 40, usia_akhir = 80, alpha = 0.055, m = 10, c = 500000000, premi = 1) {
+  hasil_list <- list()
+  
+  for (umur in usia_awal:usia_akhir) {
+    hasil <- tryCatch(
+      {
+        calculate_APV(age = umur, alpha = alpha, m = m, c = c, premi = premi)
+      },
+      error = function(e) {
+        list(PV_b = NA, PV_premi = NA, PV_c = NA)
+      }
+    )
+    
+    hasil_list[[as.character(umur)]] <- data.frame(
+      Umur = umur,
+      PV_b = hasil$PV_b,
+      PV_premi = hasil$PV_premi,
+      Premi_per_unit = hasil$PV_c
+    )
+  }
+  
+  hasil_df <- do.call(rbind, hasil_list)
+  rownames(hasil_df) <- NULL
+  
+  return(hasil_df)
+}
+
+# Panggil fungsi dan simpan hasilnya
+hasil_df <- hitung_premi_semua_umur()
+
+# Print hasil supaya kelihatan di console
+print(hasil_df)
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
